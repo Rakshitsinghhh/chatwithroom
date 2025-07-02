@@ -415,7 +415,7 @@ function App() {
                     <Home className="w-10 h-10 text-white" />
                   </div>
                   <h1 className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} mb-4`}>
-                    Welcome to WebSocket Chat
+                    Welcome to the Chat
                   </h1>
                   <p className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'} mb-6 max-w-md`}>
                     {!isConnected 
