@@ -13,7 +13,7 @@ function App() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    ws.current = new WebSocket("ws://localhost:8080")
+    ws.current = new WebSocket("wss://chatwithroom.onrender.com")
     
     ws.current.onopen = () => {
       setIsConnected(true);
