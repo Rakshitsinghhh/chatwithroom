@@ -1,16 +1,131 @@
 import { useEffect, useRef, useState } from 'react'
-import { Moon, Sun, Send, Users, MessageCircle, Plus, Copy, Check, Home } from 'lucide-react'
+import { Moon, Sun, Send, Users, MessageCircle, Plus, Copy, Check, Home, Rocket } from 'lucide-react'
 
 function App() {
   const roomIdref = useRef<HTMLInputElement>(null);
   const msgref = useRef<HTMLInputElement>(null);
   const ws = useRef<WebSocket | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDark, setIsDark] = useState(true);
   const [messages, setMessages] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
   const [currentRoomId, setCurrentRoomId] = useState<string>('');
   const [copied, setCopied] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Space background animation
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const resizeCanvas = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // Star system
+    const stars = Array.from({ length: 200 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      size: Math.random() * 2 + 0.5,
+      speed: Math.random() * 0.5 + 0.1,
+      opacity: Math.random() * 0.8 + 0.2,
+      twinkle: Math.random() * 0.02 + 0.005
+    }));
+
+    // Nebula particles
+    const nebula = Array.from({ length: 50 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      size: Math.random() * 100 + 50,
+      speed: Math.random() * 0.2 + 0.05,
+      hue: Math.random() * 60 + 240, // Blue to purple range
+      opacity: Math.random() * 0.1 + 0.05
+    }));
+
+    let animationId: number;
+
+    const animate = () => {
+      ctx.fillStyle = isDark ? '#0a0a0f' : '#1a1a2e';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw nebula
+      nebula.forEach(particle => {
+        particle.x -= particle.speed;
+        if (particle.x + particle.size < 0) {
+          particle.x = canvas.width + particle.size;
+          particle.y = Math.random() * canvas.height;
+        }
+
+        const gradient = ctx.createRadialGradient(
+          particle.x, particle.y, 0,
+          particle.x, particle.y, particle.size
+        );
+        gradient.addColorStop(0, `hsla(${particle.hue}, 100%, 70%, ${particle.opacity})`);
+        gradient.addColorStop(0.5, `hsla(${particle.hue}, 100%, 50%, ${particle.opacity * 0.5})`);
+        gradient.addColorStop(1, `hsla(${particle.hue}, 100%, 30%, 0)`);
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(
+          particle.x - particle.size,
+          particle.y - particle.size,
+          particle.size * 2,
+          particle.size * 2
+        );
+      });
+
+      // Draw stars
+      stars.forEach(star => {
+        star.x -= star.speed;
+        if (star.x < 0) {
+          star.x = canvas.width;
+          star.y = Math.random() * canvas.height;
+        }
+
+        star.opacity += Math.sin(Date.now() * star.twinkle) * 0.1;
+        star.opacity = Math.max(0.1, Math.min(1, star.opacity));
+
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 255, 255, ${star.opacity})`;
+        ctx.fill();
+
+        // Add star glow
+        const glowGradient = ctx.createRadialGradient(
+          star.x, star.y, 0,
+          star.x, star.y, star.size * 3
+        );
+        glowGradient.addColorStop(0, `rgba(255, 255, 255, ${star.opacity * 0.8})`);
+        glowGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = glowGradient;
+        ctx.fill();
+      });
+
+      animationId = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      window.removeEventListener('resize', resizeCanvas);
+      cancelAnimationFrame(animationId);
+    };
+  }, [isDark]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     ws.current = new WebSocket("wss://chatwithroom.onrender.com")
@@ -24,12 +139,31 @@ function App() {
       setIsConnected(false);
       setIsJoined(false);
       setCurrentRoomId('');
+      setTypingUsers(new Set());
       console.log("❌ Disconnected from server");
     };
 
     ws.current.onmessage = (event) => {
       console.log("📩 Message from server:", event.data);
-      setMessages(prev => [...prev, event.data]);
+      
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'typing') {
+          if (data.isTyping) {
+            setTypingUsers(prev => new Set([...prev, data.userId]));
+          } else {
+            setTypingUsers(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(data.userId);
+              return newSet;
+            });
+          }
+        } else {
+          setMessages(prev => [...prev, event.data]);
+        }
+      } catch (e) {
+        setMessages(prev => [...prev, event.data]);
+      }
     };
 
     return () => {
@@ -41,7 +175,7 @@ function App() {
   const generateRoomId = () => {
     const timestamp = Date.now().toString(36);
     const randomStr = Math.random().toString(36).substring(2, 8);
-    return `room_${timestamp}_${randomStr}`;
+    return `galaxy_${timestamp}_${randomStr}`;
   };
 
   const createRoom = () => {
@@ -52,7 +186,6 @@ function App() {
       roomIdref.current.value = newRoomId;
     }
     
-    // Automatically join the created room
     if (ws.current) {
       const payload = {
         "type": "join",
@@ -60,7 +193,7 @@ function App() {
           "roomId": newRoomId
         }
       }
-      console.log("🏠 Creating and joining room:", payload);
+      console.log("🚀 Creating and joining galaxy:", payload);
       const spay = JSON.stringify(payload);
       ws.current.send(spay);
       setIsJoined(true);
@@ -74,14 +207,51 @@ function App() {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch (err) {
-        console.error('Failed to copy room ID:', err);
+        console.error('Failed to copy galaxy ID:', err);
       }
     }
+  };
+
+  const sendTypingIndicator = (typing: boolean) => {
+    if (ws.current && isJoined) {
+      const payload = {
+        "type": "typing",
+        "payload": {
+          "isTyping": typing,
+          "roomId": currentRoomId
+        }
+      };
+      ws.current.send(JSON.stringify(payload));
+    }
+  };
+
+  const handleInputChange = () => {
+    if (!isTyping) {
+      setIsTyping(true);
+      sendTypingIndicator(true);
+    }
+    
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+      sendTypingIndicator(false);
+    }, 2000);
   };
 
   const sendmessage = () => {
     const msg = msgref.current?.value;
     if (msg && ws.current && isJoined) {
+      if (isTyping) {
+        setIsTyping(false);
+        sendTypingIndicator(false);
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
+        }
+      }
+      
       const payload = {
         "type": "chat",
         "payload": {
@@ -104,7 +274,7 @@ function App() {
           "roomId": roomid
         }
       }
-      console.log("🚪 Joining room:", payload)
+      console.log("🌌 Joining galaxy:", payload)
       const spay = JSON.stringify(payload);
       ws.current.send(spay);
       setIsJoined(true);
@@ -113,9 +283,18 @@ function App() {
   }
 
   const leaveRoom = () => {
+    if (isTyping) {
+      setIsTyping(false);
+      sendTypingIndicator(false);
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    }
+    
     setIsJoined(false);
     setCurrentRoomId('');
     setMessages([]);
+    setTypingUsers(new Set());
     if (roomIdref.current) {
       roomIdref.current.value = '';
     }
@@ -132,241 +311,342 @@ function App() {
   return (
     <>
       <style>{`
-        @keyframes blob {
-          0% {
-            transform: translate(0px, 0px) scale(1);
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;900&family=Inter:wght@300;400;500;600&display=swap');
+        
+        .space-font {
+          font-family: 'Orbitron', monospace;
+        }
+        
+        .text-font {
+          font-family: 'Inter', sans-serif;
+        }
+        
+        .typing-indicator {
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+        }
+        
+        .typing-dot {
+          width: 4px;
+          height: 4px;
+          border-radius: 50%;
+          background: linear-gradient(45deg, #00d4ff, #7c3aed);
+          animation: typing 1.4s infinite ease-in-out;
+        }
+        
+        .typing-dot:nth-child(1) {
+          animation-delay: -0.32s;
+        }
+        
+        .typing-dot:nth-child(2) {
+          animation-delay: -0.16s;
+        }
+        
+        @keyframes typing {
+          0%, 80%, 100% {
+            transform: scale(0.8);
+            opacity: 0.5;
           }
-          33% {
-            transform: translate(30px, -50px) scale(1.1);
-          }
-          66% {
-            transform: translate(-20px, 20px) scale(0.9);
-          }
-          100% {
-            transform: translate(0px, 0px) scale(1);
+          40% {
+            transform: scale(1);
+            opacity: 1;
           }
         }
-        .animate-blob {
-          animation: blob 7s infinite;
+        
+        .glass-morphism {
+          background: rgba(255, 255, 255, 0.05);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .animation-delay-2000 {
-          animation-delay: 2s;
+        
+        .glass-morphism-light {
+          background: rgba(255, 255, 255, 0.25);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(255, 255, 255, 0.3);
         }
-        .animation-delay-4000 {
-          animation-delay: 4s;
+        
+        .neon-glow {
+          box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
         }
-        .animation-delay-6000 {
-          animation-delay: 6s;
+        
+        .neon-glow:hover {
+          box-shadow: 0 0 30px rgba(0, 212, 255, 0.5);
+        }
+        
+        .cosmic-gradient {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .aurora-gradient {
+          background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 50%, #f093fb 100%);
+        }
+        
+        .star-field {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+          z-index: 0;
         }
       `}</style>
       
-      <div className={`min-h-screen transition-all duration-500 ${isDark ? 'bg-gray-900' : 'bg-gray-50'} relative overflow-hidden`}>
-        {/* Animated Background */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div className={`absolute -top-4 -left-4 w-72 h-72 ${isDark ? 'bg-purple-500' : 'bg-blue-400'} rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob`}></div>
-          <div className={`absolute -top-4 -right-4 w-72 h-72 ${isDark ? 'bg-blue-500' : 'bg-purple-400'} rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000`}></div>
-          <div className={`absolute -bottom-8 left-20 w-72 h-72 ${isDark ? 'bg-pink-500' : 'bg-green-400'} rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000`}></div>
-          <div className={`absolute bottom-8 right-20 w-72 h-72 ${isDark ? 'bg-indigo-500' : 'bg-yellow-400'} rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-6000`}></div>
-        </div>
-
+      {/* Animated Space Background */}
+      <canvas 
+        ref={canvasRef} 
+        className="star-field"
+      />
+      
+      <div className="min-h-screen relative z-10">
+        
         {/* Theme Toggle */}
-        <div className="absolute top-6 right-6 z-10">
+        <div className="absolute top-6 right-6 z-20">
           <button
             onClick={() => setIsDark(!isDark)}
-            className={`p-3 rounded-full transition-all duration-300 ${
+            className={`p-3 rounded-2xl transition-all duration-300 neon-glow ${
               isDark 
-                ? 'bg-gray-800 hover:bg-gray-700 text-yellow-400' 
-                : 'bg-white hover:bg-gray-100 text-gray-700'
-            } shadow-lg hover:shadow-xl transform hover:scale-110`}
+                ? 'glass-morphism text-cyan-400 hover:text-cyan-300' 
+                : 'glass-morphism-light text-purple-600 hover:text-purple-700'
+            }`}
           >
             {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
         </div>
 
         {/* Connection Status */}
-        <div className="absolute top-6 left-6 z-10">
-          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full ${
-            isDark ? 'bg-gray-800/80' : 'bg-white/80'
-          } backdrop-blur-sm shadow-lg`}>
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'} animate-pulse`}></div>
-            <span className={`text-sm font-medium ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>
-              {isConnected ? 'Connected' : 'Disconnected'}
-            </span>
+        <div className="absolute top-6 left-6 z-20">
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium text-font ${
+            isDark 
+              ? 'glass-morphism text-cyan-300' 
+              : 'glass-morphism-light text-purple-700'
+          }`}>
+            <div className={`w-2 h-2 rounded-full ${
+              isConnected ? 'bg-green-400 shadow-green-400' : 'bg-red-400 shadow-red-400'
+            } shadow-lg`}></div>
+            <span>{isConnected ? 'Connected to Starbase' : 'Lost in Space'}</span>
           </div>
         </div>
 
-        <div className="relative z-10 min-h-screen flex p-6 gap-6">
-          {/* Sidebar - Room Management */}
-          <div className={`w-80 ${
+        <div className="min-h-screen flex p-6 gap-6">
+          {/* Sidebar - Galaxy Control */}
+          <div className={`w-80 h-fit rounded-3xl transition-all duration-300 ${
             isDark 
-              ? 'bg-gray-800/90 border-gray-700' 
-              : 'bg-white/90 border-gray-200'
-          } backdrop-blur-lg rounded-3xl shadow-2xl border p-6 h-fit`}>
+              ? 'glass-morphism neon-glow' 
+              : 'glass-morphism-light'
+          }`}>
             
-            {/* Sidebar Header */}
-            <div className="text-center mb-6">
-              <div className={`inline-flex items-center justify-center w-12 h-12 ${
-                isDark ? 'bg-purple-600' : 'bg-blue-600'
-              } rounded-xl mb-3`}>
-                <Users className="w-6 h-6 text-white" />
-              </div>
-              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} mb-1`}>
-                Room Manager
-              </h2>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                Create or join a room
-              </p>
-            </div>
-
-            {/* Room Actions */}
-            <div className="space-y-4">
-              {/* Create Room Button */}
-              <button
-                onClick={createRoom}
-                disabled={!isConnected}
-                className={`w-full flex items-center justify-center space-x-2 px-4 py-3 rounded-xl font-semibold transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  isDark 
-                    ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-green-500/25' 
-                    : 'bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-green-500/25'
-                }`}
-              >
-                <Plus className="w-5 h-5" />
-                <span>Create New Room</span>
-              </button>
-
-              {/* Divider */}
-              <div className={`text-center text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-                — or —
-              </div>
-              
-              {/* Join Room */}
-              <div className="space-y-3">
-                <input
-                  ref={roomIdref}
-                  placeholder="Enter existing room ID"
-                  onKeyPress={(e) => handleKeyPress(e, joinUser)}
-                  className={`w-full px-4 py-3 rounded-xl border transition-all duration-200 ${
-                    isDark 
-                      ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-purple-500 focus:bg-gray-600' 
-                      : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:bg-white'
-                  } focus:outline-none focus:ring-2 focus:ring-opacity-50 ${
-                    isDark ? 'focus:ring-purple-500' : 'focus:ring-blue-500'
-                  }`}
-                />
-                <button
-                  onClick={joinUser}
-                  disabled={!isConnected}
-                  className={`w-full px-4 py-3 rounded-xl font-semibold transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
-                    isDark 
-                      ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-lg hover:shadow-purple-500/25' 
-                      : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg hover:shadow-blue-500/25'
-                  }`}
-                >
-                  Join Room
-                </button>
-              </div>
-            </div>
-
-            {/* Current Room Display */}
-            {currentRoomId && (
-              <div className={`mt-6 p-4 rounded-xl ${
-                isDark ? 'bg-gray-700/50 border border-gray-600' : 'bg-blue-50 border border-blue-200'
-              }`}>
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'} mb-1`}>
-                      Current Room:
-                    </p>
-                    <p className={`font-mono text-sm ${isDark ? 'text-green-400' : 'text-green-600'} break-all`}>
-                      {currentRoomId}
-                    </p>
-                  </div>
-                  <button
-                    onClick={copyRoomId}
-                    className={`p-2 rounded-lg transition-all duration-200 ${
-                      isDark 
-                        ? 'hover:bg-gray-600 text-gray-400 hover:text-gray-200' 
-                        : 'hover:bg-blue-100 text-gray-600 hover:text-gray-800'
-                    }`}
-                    title="Copy Room ID"
-                  >
-                    {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                  </button>
+            <div className="p-6">
+              {/* Sidebar Header */}
+              <div className="text-center mb-8">
+                <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 aurora-gradient">
+                  <Rocket className="w-8 h-8 text-white" />
+                  <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-cyan-400/20 to-purple-600/20 animate-pulse"></div>
                 </div>
-                <button
-                  onClick={leaveRoom}
-                  className={`w-full px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                    isDark 
-                      ? 'bg-red-600/20 hover:bg-red-600/30 text-red-400 hover:text-red-300' 
-                      : 'bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700'
-                  }`}
-                >
-                  Leave Room
-                </button>
-              </div>
-            )}
-
-            {/* Connection Status in Sidebar */}
-            {!isConnected && (
-              <div className={`mt-6 p-3 rounded-xl ${
-                isDark ? 'bg-red-900/30 border border-red-800' : 'bg-red-50 border border-red-200'
-              }`}>
-                <p className={`text-center text-xs ${isDark ? 'text-red-300' : 'text-red-600'}`}>
-                  ⚠️ WebSocket disconnected
+                <h2 className={`text-xl font-bold mb-2 space-font ${
+                  isDark ? 'text-cyan-300' : 'text-purple-700'
+                }`}>
+                  GALAXY CONTROL
+                </h2>
+                <p className={`text-sm text-font ${
+                  isDark ? 'text-cyan-200/70' : 'text-purple-600/70'
+                }`}>
+                  Create or join a galaxy to start transmitting
                 </p>
               </div>
-            )}
+
+              {/* Galaxy Actions */}
+              <div className="space-y-4">
+                {/* Create Galaxy Button */}
+                <button
+                  onClick={createRoom}
+                  disabled={!isConnected}
+                  className={`w-full flex items-center justify-center space-x-2 px-4 py-3 rounded-2xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed space-font neon-glow ${
+                    isDark 
+                      ? 'aurora-gradient text-white hover:shadow-cyan-500/30' 
+                      : 'cosmic-gradient text-white hover:shadow-purple-500/30'
+                  }`}
+                >
+                  <Plus className="w-5 h-5" />
+                  <span>CREATE GALAXY</span>
+                </button>
+
+                {/* Divider */}
+                <div className={`text-center text-sm space-font ${
+                  isDark ? 'text-cyan-400/50' : 'text-purple-500/50'
+                }`}>
+                  — OR NAVIGATE TO —
+                </div>
+                
+                {/* Join Galaxy */}
+                <div className="space-y-3">
+                  <input
+                    ref={roomIdref}
+                    placeholder="Enter galaxy coordinates..."
+                    onKeyPress={(e) => handleKeyPress(e, joinUser)}
+                    className={`w-full px-4 py-3 rounded-2xl border-0 transition-all duration-300 text-sm text-font ${
+                      isDark 
+                        ? 'glass-morphism text-cyan-100 placeholder-cyan-300/50 focus:shadow-cyan-500/20' 
+                        : 'glass-morphism-light text-purple-700 placeholder-purple-500/50 focus:shadow-purple-500/20'
+                    } focus:outline-none focus:shadow-lg`}
+                  />
+                  <button
+                    onClick={joinUser}
+                    disabled={!isConnected}
+                    className={`w-full px-4 py-3 rounded-2xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed space-font ${
+                      isDark 
+                        ? 'glass-morphism text-cyan-300 hover:bg-cyan-500/10 neon-glow' 
+                        : 'glass-morphism-light text-purple-700 hover:bg-purple-500/10'
+                    }`}
+                  >
+                    JOIN GALAXY
+                  </button>
+                </div>
+              </div>
+
+              {/* Current Galaxy Display */}
+              {currentRoomId && (
+                <div className={`mt-6 p-4 rounded-2xl ${
+                  isDark 
+                    ? 'glass-morphism border-cyan-500/30' 
+                    : 'glass-morphism-light border-purple-400/30'
+                } border`}>
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-semibold mb-1 space-font ${
+                        isDark ? 'text-cyan-400' : 'text-purple-600'
+                      }`}>
+                        CURRENT GALAXY
+                      </p>
+                      <p className={`font-mono text-sm break-all ${
+                        isDark ? 'text-cyan-200' : 'text-purple-700'
+                      }`}>
+                        {currentRoomId}
+                      </p>
+                    </div>
+                    <button
+                      onClick={copyRoomId}
+                      className={`p-2 rounded-xl transition-all duration-200 ${
+                        isDark 
+                          ? 'hover:bg-cyan-500/20 text-cyan-400 hover:text-cyan-300' 
+                          : 'hover:bg-purple-500/20 text-purple-600 hover:text-purple-700'
+                      }`}
+                      title="Copy Galaxy Coordinates"
+                    >
+                      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <button
+                    onClick={leaveRoom}
+                    className={`w-full px-3 py-2 rounded-xl text-sm font-semibold transition-all duration-200 space-font ${
+                      isDark 
+                        ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30' 
+                        : 'bg-red-500/20 hover:bg-red-500/30 text-red-600 border border-red-400/30'
+                    }`}
+                  >
+                    LEAVE GALAXY
+                  </button>
+                </div>
+              )}
+
+              {/* Connection Status in Sidebar */}
+              {!isConnected && (
+                <div className={`mt-6 p-3 rounded-2xl border ${
+                  isDark 
+                    ? 'glass-morphism border-red-500/30 text-red-300' 
+                    : 'glass-morphism-light border-red-400/30 text-red-600'
+                }`}>
+                  <p className="text-center text-xs space-font">
+                    ⚠️ TRANSMISSION LOST
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Main Chat Area */}
+          {/* Main Communication Array */}
           <div className="flex-1 flex flex-col">
             {canChat ? (
-              <div className={`flex-1 ${
+              <div className={`flex-1 rounded-3xl transition-all duration-300 flex flex-col ${
                 isDark 
-                  ? 'bg-gray-800/90 border-gray-700' 
-                  : 'bg-white/90 border-gray-200'
-              } backdrop-blur-lg rounded-3xl shadow-2xl border flex flex-col`}>
+                  ? 'glass-morphism neon-glow' 
+                  : 'glass-morphism-light'
+              }`}>
                 
-                {/* Chat Header */}
-                <div className={`p-6 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                {/* Communication Header */}
+                <div className={`p-6 border-b ${
+                  isDark ? 'border-cyan-500/20' : 'border-purple-400/20'
+                }`}>
                   <div className="flex items-center space-x-3">
-                    <div className={`p-2 ${isDark ? 'bg-purple-600' : 'bg-blue-600'} rounded-lg`}>
-                      <MessageCircle className="w-5 h-5 text-white" />
+                    <div className="relative p-3 rounded-2xl aurora-gradient">
+                      <MessageCircle className="w-6 h-6 text-white" />
+                      <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-cyan-400/20 to-purple-600/20 animate-pulse"></div>
                     </div>
                     <div>
-                      <h1 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                        Chat Room
+                      <h1 className={`text-xl font-bold space-font ${
+                        isDark ? 'text-cyan-300' : 'text-purple-700'
+                      }`}>
+                        GALACTIC COMMUNICATIONS
                       </h1>
-                      <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Connected to {currentRoomId}
+                      <p className={`text-sm text-font ${
+                        isDark ? 'text-cyan-200/70' : 'text-purple-600/70'
+                      }`}>
+                        {currentRoomId}
                       </p>
                     </div>
                   </div>
                 </div>
 
                 {/* Messages Area */}
-                <div className="flex-1 p-6 overflow-y-auto">
+                <div className="flex-1 p-6 overflow-y-auto min-h-0">
                   {messages.length > 0 ? (
-                    <div className="space-y-3">
+                    <div className="space-y-4">
                       {messages.map((msg, index) => (
-                        <div key={index} className={`p-3 rounded-lg ${
-                          isDark ? 'bg-gray-700/50' : 'bg-gray-100'
+                        <div key={index} className={`p-4 rounded-2xl max-w-2xl backdrop-blur-sm ${
+                          isDark 
+                            ? 'bg-cyan-500/10 text-cyan-100 border border-cyan-500/20' 
+                            : 'bg-purple-500/10 text-purple-800 border border-purple-400/20'
                         }`}>
-                          <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                            {msg}
-                          </p>
+                          <p className="text-sm leading-relaxed text-font">{msg}</p>
                         </div>
                       ))}
+                      
+                      {/* Typing Indicator */}
+                      {typingUsers.size > 0 && (
+                        <div className={`p-4 rounded-2xl max-w-xs backdrop-blur-sm ${
+                          isDark 
+                            ? 'bg-purple-500/10 text-purple-300 border border-purple-500/20' 
+                            : 'bg-cyan-500/10 text-cyan-700 border border-cyan-400/20'
+                        }`}>
+                          <div className="flex items-center space-x-2">
+                            <span className="text-xs space-font">TRANSMISSION INCOMING</span>
+                            <div className="typing-indicator">
+                              <div className="typing-dot"></div>
+                              <div className="typing-dot"></div>
+                              <div className="typing-dot"></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div ref={messagesEndRef} />
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-full">
                       <div className="text-center">
-                        <MessageCircle className={`w-12 h-12 mx-auto mb-4 ${isDark ? 'text-gray-600' : 'text-gray-400'}`} />
-                        <p className={`text-lg font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'} mb-2`}>
-                          No messages yet
+                        <MessageCircle className={`w-12 h-12 mx-auto mb-4 ${
+                          isDark ? 'text-cyan-500/50' : 'text-purple-500/50'
+                        }`} />
+                        <p className={`text-lg font-bold mb-2 space-font ${
+                          isDark ? 'text-cyan-400/70' : 'text-purple-600/70'
+                        }`}>
+                          CHANNEL SILENT
                         </p>
-                        <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
-                          Start the conversation by sending a message below
+                        <p className={`text-sm text-font ${
+                          isDark ? 'text-cyan-300/50' : 'text-purple-500/50'
+                        }`}>
+                          Begin transmission to establish communication
                         </p>
                       </div>
                     </div>
@@ -374,27 +654,24 @@ function App() {
                 </div>
 
                 {/* Message Input */}
-                <div className={`p-6 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className={`p-6 border-t ${
+                  isDark ? 'border-cyan-500/20' : 'border-purple-400/20'
+                }`}>
                   <div className="flex space-x-3">
                     <input
                       ref={msgref}
-                      placeholder="Type your message..."
+                      placeholder="Transmit message across the galaxy..."
+                      onChange={handleInputChange}
                       onKeyPress={(e) => handleKeyPress(e, sendmessage)}
-                      className={`flex-1 px-4 py-3 rounded-xl border transition-all duration-200 ${
+                      className={`flex-1 px-4 py-3 rounded-2xl border-0 transition-all duration-300 text-font ${
                         isDark 
-                          ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-purple-500 focus:bg-gray-600' 
-                          : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:bg-white'
-                      } focus:outline-none focus:ring-2 focus:ring-opacity-50 ${
-                        isDark ? 'focus:ring-purple-500' : 'focus:ring-blue-500'
-                      }`}
+                          ? 'glass-morphism text-cyan-100 placeholder-cyan-300/50 focus:shadow-cyan-500/20' 
+                          : 'glass-morphism-light text-purple-700 placeholder-purple-500/50 focus:shadow-purple-500/20'
+                      } focus:outline-none focus:shadow-lg`}
                     />
                     <button
                       onClick={sendmessage}
-                      className={`p-3 rounded-xl font-semibold transition-all duration-200 transform hover:scale-105 ${
-                        isDark 
-                          ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-lg hover:shadow-purple-500/25' 
-                          : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg hover:shadow-blue-500/25'
-                      }`}
+                      className="p-3 rounded-2xl transition-all duration-300 aurora-gradient text-white neon-glow hover:shadow-lg"
                     >
                       <Send className="w-5 h-5" />
                     </button>
@@ -402,35 +679,38 @@ function App() {
                 </div>
               </div>
             ) : (
-              /* Welcome/Instructions Screen */
-              <div className={`flex-1 ${
+              /* Welcome Screen */
+              <div className={`flex-1 rounded-3xl flex items-center justify-center ${
                 isDark 
-                  ? 'bg-gray-800/90 border-gray-700' 
-                  : 'bg-white/90 border-gray-200'
-              } backdrop-blur-lg rounded-3xl shadow-2xl border flex items-center justify-center`}>
+                  ? 'glass-morphism neon-glow' 
+                  : 'glass-morphism-light'
+              }`}>
                 <div className="text-center p-8">
-                  <div className={`inline-flex items-center justify-center w-20 h-20 ${
-                    isDark ? 'bg-purple-600' : 'bg-blue-600'
-                  } rounded-3xl mb-6`}>
-                    <Home className="w-10 h-10 text-white" />
+                  <div className="relative inline-flex items-center justify-center w-24 h-24 rounded-3xl mb-6 aurora-gradient">
+                    <Home className="w-12 h-12 text-white" />
+                    <div className="absolute inset-0 rounded-3xl bg-gradient-to-r from-cyan-400/20 to-purple-600/20 animate-pulse"></div>
                   </div>
-                  <h1 className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} mb-4`}>
-                    Welcome to the Chat
+                  <h1 className={`text-4xl font-bold mb-4 space-font ${
+                    isDark ? 'text-cyan-300' : 'text-purple-700'
+                  }`}>
+                    COSMIC CHAT
                   </h1>
-                  <p className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'} mb-6 max-w-md`}>
+                  <p className={`text-lg mb-6 max-w-md mx-auto text-font ${
+                    isDark ? 'text-cyan-200/70' : 'text-purple-600/70'
+                  }`}>
                     {!isConnected 
-                      ? "Connecting to server..."
-                      : "Create a new room or join an existing one to start chatting"
+                      ? "Establishing connection to the cosmos..."
+                      : "Create a new galaxy or join existing coordinates to begin interstellar communication"
                     }
                   </p>
                   {isConnected && (
-                    <div className={`inline-flex items-center space-x-2 px-4 py-2 rounded-full ${
-                      isDark ? 'bg-green-900/30' : 'bg-green-50'
+                    <div className={`inline-flex items-center space-x-2 px-4 py-2 rounded-full backdrop-blur-sm ${
+                      isDark 
+                        ? 'bg-green-500/20 text-green-300 border border-green-500/30' 
+                        : 'bg-green-500/20 text-green-700 border border-green-400/30'
                     }`}>
-                      <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                      <span className={`text-sm font-medium ${isDark ? 'text-green-400' : 'text-green-600'}`}>
-                        Ready to chat
-                      </span>
+                      <div className="w-2 h-2 bg-green-400 rounded-full shadow-green-400 shadow-lg animate-pulse"></div>
+                      <span className="text-sm font-semibold space-font">READY FOR TRANSMISSION</span>
                     </div>
                   )}
                 </div>
